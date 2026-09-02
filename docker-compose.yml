@@ -1,0 +1,83 @@
+# Разворачивается на archa, в той же docker-сети, что web/daphne
+# (docker-compose.obf.yml, project "prod" -> сеть "prod_db_network") -
+# иначе traffic_monitor не достучится до smart_parking_backend по имени
+# сервиса. Один build context на все 4 сервиса (консолидировано из
+# Camera_Entrance/Camera_Exit/Camera_White_Entrance/Camera_White_Exit -
+# были байт-в-байт идентичны по Dockerfile/requirements.txt/services/*,
+# см. TZ_konsolidatsiya.md) - Docker кэширует слой с 37MB NetSDK wheel
+# один раз на все сервисы, а не пересобирает/передублирует его 4 раза.
+#
+# Запуск: docker network inspect prod_db_network >/dev/null 2>&1 || \
+#   (значит имя сети другое - проверь `docker network ls` после того,
+#   как web/daphne подняты через docker-compose.obf.yml --project-name prod)
+# docker compose up --build -d
+
+networks:
+  db_network:
+    external: true
+    name: prod_db_network
+
+services:
+  camera_entrance_1:
+    container_name: dahua_camera_entrance_1
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - CAMERA_ROLE=entrance
+      - CAMERA_SLOT=1
+    env_file:
+      - ./.env
+    volumes:
+      - ./data/entrance_1:/app/data
+    networks:
+      - db_network
+
+  camera_entrance_2:
+    container_name: dahua_camera_entrance_2
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - CAMERA_ROLE=entrance
+      - CAMERA_SLOT=2
+    env_file:
+      - ./.env
+    volumes:
+      - ./data/entrance_2:/app/data
+    networks:
+      - db_network
+
+  camera_exit_1:
+    container_name: dahua_camera_exit_1
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - CAMERA_ROLE=exit
+      - CAMERA_SLOT=1
+    env_file:
+      - ./.env
+    volumes:
+      - ./data/exit_1:/app/data
+    networks:
+      - db_network
+
+  camera_exit_2:
+    container_name: dahua_camera_exit_2
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - CAMERA_ROLE=exit
+      - CAMERA_SLOT=2
+    env_file:
+      - ./.env
+    volumes:
+      - ./data/exit_2:/app/data
+    networks:
+      - db_network

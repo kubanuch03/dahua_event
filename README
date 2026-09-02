@@ -1,0 +1,2 @@
+docker network create db_network
+docker compose up --build
