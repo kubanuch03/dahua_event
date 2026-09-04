@@ -60,10 +60,49 @@ callback_num = 0
 # construction vehicles genuinely do use parking lots) and blocking a real
 # paying customer, which is worse than occasionally letting through a
 # borderline non-car detection that still carries a plausible plate.
+#
+# CONFIRMED GAP (live on archa, 2026-09-04): real camera firmware sends
+# subtypes NOT in the documented SDK enum at all - "MPV"/"SUV"/
+# "MidPassengerCar" (fine, obviously vehicles, denylist correctly let them
+# through) and "Twocycle" (NOT fine - a two-wheeler that slipped through
+# because it wasn't in this set, despite "Bicycle"/"Motorcycle" being
+# denied). The vendor doc comment is not a reliable full list of what
+# firmware actually emits - see _log_unrecognized_subtype below, which
+# catches the NEXT such gap loudly instead of silently in either direction.
 _NON_VEHICLE_SUBTYPES = {
     "", "unknown", "non-motor", "bicycle", "motorcycle", "tricycle",
-    "electricbike", "passerby",  # "Passerby" = pedestrian
+    "electricbike", "twocycle", "passerby",  # "Passerby" = pedestrian
 }
+
+# Subtypes confirmed to be real vehicles, for the "is this a brand new,
+# never-seen value" check below - NOT used for the actual filter decision
+# (that's still purely denylist-based, see _NON_VEHICLE_SUBTYPES above).
+# Includes both the documented vendor enum's vehicle entries and the
+# undocumented-but-observed-live ones (mpv/suv/midpassengercar).
+_KNOWN_VEHICLE_SUBTYPES = {
+    "motor", "bus", "passengercar", "largetruck", "midtruck", "salooncar",
+    "microbus", "microtruck", "dregscar", "excavator", "bulldozer",
+    "crane", "pumptruck", "machineshoptruck", "forklift",
+    "mpv", "suv", "midpassengercar",
+}
+
+
+def _log_unrecognized_subtype(subtype: str, plate: str) -> None:
+    """
+    Safety net for the exact class of bug found live today: a Dahua
+    subtype that's neither in the deny-list nor previously confirmed as a
+    real vehicle. Doesn't change the filter decision (still pure
+    denylist) - just makes a brand-new undocumented value show up as a
+    WARNING immediately, instead of being discovered days later as "why
+    did a bike get a parking session".
+    """
+    if subtype and subtype not in _NON_VEHICLE_SUBTYPES and subtype not in _KNOWN_VEHICLE_SUBTYPES:
+        logger.warning(
+            f"Неизвестный object_subType_str от камеры: {subtype!r} (plate={plate!r}) - "
+            f"не в денай-листе (пропущено как транспорт) и не в списке подтверждённых "
+            f"типов техники. Проверьте вручную, не очередной ли это случай вроде "
+            f"'Twocycle' (велосипед, который сначала пролез мимо фильтра)."
+        )
 
 # (camera_id, plate) -> monotonic timestamp of last accepted push. Backstop
 # dedup only - the primary mechanism is alarm_info.nSequence below (SDK's
@@ -108,6 +147,7 @@ class Callbacks:
            одного проезда - основной механизм (2), это только бэкстоп.
         """
         subtype = (parsed_info.get("object_subType_str") or "").strip().lower()
+        _log_unrecognized_subtype(subtype, parsed_info.get("plate_number_str"))
         if subtype in _NON_VEHICLE_SUBTYPES:
             return False, f"non-vehicle subtype {subtype!r}"
 
