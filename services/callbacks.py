@@ -1,10 +1,12 @@
 # callbacks.py (ОБНОВЛЕННЫЙ)
 import os
+import time
 from ctypes import cast, POINTER, c_ubyte, c_longlong, c_ulong, c_void_p, c_ulonglong, c_int
 from services.traffic_info import TrafficCallBackAlarmInfo
 # --- УДАЛЕНО --- Убираем зависимость от внешнего сервиса Autovision
 # from services.autovision import StateNumberDetector 
 from services.smart_parking import SmartParking
+from services.outbox import Outbox, start_drain_thread
 
 from NetSDK.SDK_Enum import *
 from NetSDK.SDK_Callback import *
@@ -20,6 +22,26 @@ smart_parking = SmartParking(
     api_url=os.environ["SMARTPARKING_DATA_PROCESS_URL"],
 )
 
+# Durable-очередь на диске (см. services/outbox.py) - каждое событие
+# сначала пишется сюда, потом уже пытается уйти в SmartParking. Файл
+# лежит в примонтированной data/ (пер-контейнерной, docker-compose.yml -
+# ./data/<role>_<slot>:/app/data) - переживает и обрыв сети, и рестарт
+# самого контейнера.
+outbox = Outbox(os.path.join(os.path.abspath("data"), "outbox.db"))
+
+
+def start_background_drain():
+    """
+    Запускает фоновый поток, добивающий недоставленные события из outbox.
+    Вызывается один раз из traffic_monitor.py перед входом в основной
+    блокирующий цикл SDK.
+    """
+    def _sender(event_data, photo):
+        delivered, _ = smart_parking.push_parking_event(event_data, photo, retries=1)
+        return delivered
+
+    return start_drain_thread(outbox, _sender)
+
 # Локальная debug-копия снимков в data/Global/ - реальное фото и так уходит
 # в SmartParking через push_parking_event ниже. На Balykchy этот "для
 # отладки" каталог без единого ограничения вырос до 23-24GB за ~год на
@@ -28,6 +50,32 @@ smart_parking = SmartParking(
 SAVE_DEBUG_SNAPSHOTS = os.environ.get("SAVE_DEBUG_SNAPSHOTS", "false").lower() == "true"
 
 callback_num = 0
+
+# Vendor enum for szObjectSubType (NetSDK/SDK_Struct.py, SDK_MSG_OBJECT
+# comment) - "Vehicle Category" values. Everything NOT in this deny-set is
+# treated as a reportable vehicle. Deliberately a denylist, not an
+# allowlist: this is a paid-parking gate camera, and an allowlist risks
+# silently rejecting a legitimate but unlisted vehicle type (the vendor
+# list already includes odd entries like "DregsCar"/"Excavator"/"Crane" -
+# construction vehicles genuinely do use parking lots) and blocking a real
+# paying customer, which is worse than occasionally letting through a
+# borderline non-car detection that still carries a plausible plate.
+_NON_VEHICLE_SUBTYPES = {
+    "", "unknown", "non-motor", "bicycle", "motorcycle", "tricycle",
+    "electricbike", "passerby",  # "Passerby" = pedestrian
+}
+
+# (camera_id, plate) -> monotonic timestamp of last accepted push. Backstop
+# dedup only - the primary mechanism is alarm_info.nSequence below (SDK's
+# own "1 = last shot of this burst" marker, see DEV_EVENT_TRAFFICJUNCTION_INFO
+# in NetSDK/SDK_Struct.py: "如3,2,1,1表示抓拍结束,0表示异常结束" - a
+# countdown per physical crossing, 1 is the final/definitive shot, 0 is an
+# aborted burst with no clean final shot). This dict only guards against
+# the SDK re-hitting nSequence==1 twice for what should be one crossing
+# (firmware quirks, retriggers) - one process per camera (see main.py), so
+# no cross-camera key collisions possible.
+_recent_pushes = {}
+_DEDUP_WINDOW_SECONDS = 15
 
 class Callbacks:
     camera_code = None
@@ -41,6 +89,50 @@ class Callbacks:
         cls.camera_id = camera_id
         cls.camera_name = camera_name
         cls.camera_routing_key = camera_routing_key
+
+    @staticmethod
+    def _should_report(alarm_info, parsed_info, camera_id):
+        """
+        Решает, стоит ли отправлять это срабатывание в SmartParking.
+        Возвращает (bool, reason_for_skip_or_None).
+
+        1. object_subType_str - реальный транспорт, не пешеход/велосипед/
+           неизвестный объект (см. _NON_VEHICLE_SUBTYPES выше).
+        2. alarm_info.nSequence - SDK шлёт серию кадров на один физический
+           проезд с обратным отсчётом (3,2,1), 1 = финальный/итоговый кадр
+           серии, 0 = серия прервалась аварийно. Отчитываемся ТОЛЬКО по
+           финальному кадру (nSequence == 1) - это и есть дедупликация:
+           кадры 3 и 2 того же проезда просто не долетают до SmartParking.
+        3. Короткое окно-подстраховка по (camera_id, номер) на случай, если
+           прошивка когда-нибудь не дойдёт ровно до nSequence==1 дважды для
+           одного проезда - основной механизм (2), это только бэкстоп.
+        """
+        subtype = (parsed_info.get("object_subType_str") or "").strip().lower()
+        if subtype in _NON_VEHICLE_SUBTYPES:
+            return False, f"non-vehicle subtype {subtype!r}"
+
+        sequence = alarm_info.nSequence
+        if sequence == 0:
+            return False, "aborted burst (nSequence=0)"
+        if sequence != 1:
+            return False, f"not final frame of burst (nSequence={sequence})"
+
+        plate = (parsed_info.get("plate_number_str") or "").strip()
+        if plate:
+            key = (camera_id, plate)
+            now = time.monotonic()
+            last_seen = _recent_pushes.get(key)
+            if last_seen is not None and (now - last_seen) < _DEDUP_WINDOW_SECONDS:
+                return False, f"duplicate within {_DEDUP_WINDOW_SECONDS}s window"
+            _recent_pushes[key] = now
+            # Дешёвая уборка старых записей - трафик одной полосы никогда
+            # не раздует этот словарь настолько, чтобы это было проблемой,
+            # но не копить его бесконечно тоже не стоит.
+            stale = [k for k, ts in _recent_pushes.items() if now - ts > _DEDUP_WINDOW_SECONDS * 4]
+            for k in stale:
+                _recent_pushes.pop(k, None)
+
+        return True, None
 
     @CB_FUNCTYPE(
         None, c_longlong, c_ulong, c_void_p, POINTER(c_ubyte),
@@ -70,11 +162,20 @@ class Callbacks:
             # 2. Получаем номерной знак из данных SDK
             plate_number_from_sdk = a.get("plate_number_str")
 
-            # 3. Проверяем, что номер был распознан камерой
-            if plate_number_from_sdk and plate_number_from_sdk.strip():
+            # 3. Проверяем, что номер был распознан камерой, что это
+            # финальный кадр серии (не дубль внутри одного проезда) и что
+            # объект - действительно транспорт (не пешеход/велосипед и т.п.)
+            should_report, skip_reason = Callbacks._should_report(alarm_info, a, camera_id)
+            if not should_report:
+                if plate_number_from_sdk and plate_number_from_sdk.strip():
+                    logger.debug(
+                        f"Skipping event ({skip_reason}): plate={plate_number_from_sdk!r} "
+                        f"subtype={a.get('object_subType_str')!r} nSequence={alarm_info.nSequence}"
+                    )
+            elif plate_number_from_sdk and plate_number_from_sdk.strip():
                 smart_parking_data = {
                     "license_plate": plate_number_from_sdk.strip(),
-                    "license_plate_country": "KG", 
+                    "license_plate_country": "KG",
                     "color": a.get("vehicle_color_str", "unknown"),
                     "event_id": f"{camera_id}_{callback_num}",
                     # camera_routing_key = "{CAMERA_ROLE}_{CAMERA_SLOT}",
@@ -85,6 +186,11 @@ class Callbacks:
                     # parking_service.py::_resolve_camera_by_slot_key.
                     "camera": camera_routing_key,
                     "recognize": "Dahua SDK Direct",
+                    # Реальное время детекции с камеры - SmartParking сам
+                    # санити-чекает его (часы камеры не гарантированно
+                    # синхронизированы по NTP) и откатывается на время
+                    # сервера, если оно выглядит неправдоподобно.
+                    "event_time": a.get("event_time_iso"),
                 }
                 
                 # --- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---
@@ -111,14 +217,31 @@ class Callbacks:
                         logger.error(f"Error extracting or saving image: {e}")
 
                 try:
-                    logger.info(f"Sending to SmartParking (from SDK): {smart_parking_data}")
-                    # Передаем и текстовые данные, и байты изображения
-                    smart_parking.push_parking_event(
-                        event_data=smart_parking_data, 
-                        image_data=image_buffer
-                    )
+                    logger.info(f"Queueing for SmartParking (from SDK): {smart_parking_data}")
+                    # Единственный путь доставки - durable outbox +
+                    # фоновый drain-поток (start_background_drain). Раньше
+                    # этот же поток захвата ЕЩЁ и пытался отправить событие
+                    # немедленно сразу после enqueue() - drain-поток мог
+                    # подхватить ту же самую только что записанную строку и
+                    # отправить её ВТОРОЙ раз параллельно с этой немедленной
+                    # попыткой (гонка, воспроизводимая в штатном режиме, не
+                    # только при сбоях). Теперь ровно один потребитель
+                    # очереди - drain-поток; он же почти сразу заберёт
+                    # событие (enqueue() будит его немедленно, см.
+                    # Outbox._has_work), так что задержка на здоровом пути
+                    # не растёт.
+                    outbox.enqueue(smart_parking_data, image_buffer)
                 except Exception as e:
-                    logger.error(f"Failed to send data to SmartParking: {e}")
+                    # Событие не попало даже в durable-очередь - это
+                    # единственный путь к SmartParking для этого проезда, и
+                    # он только что отказал (диск полон/заблокирован/
+                    # недоступен). Событие теряется безвозвратно - должно
+                    # быть заметно сразу, а не тихой ERROR-строкой среди
+                    # сотен обычных логов.
+                    logger.critical(
+                        f"НЕ УДАЛОСЬ поставить событие в очередь - будет ПОТЕРЯНО: {e}. "
+                        f"Данные события: {smart_parking_data}"
+                    )
             else:
                 logger.warning("No license plate detected by camera SDK. Skipping SmartParking.")
 

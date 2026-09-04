@@ -5,6 +5,7 @@ import time
 import requests
 
 from services.traffic_monitor import start_traffic_monitor
+from services.callbacks import start_background_drain
 from logger import setup_logging, get_logger
 
 setup_logging()
@@ -102,6 +103,16 @@ def start_monitor_for_camera(camera):
 
 
 if __name__ == "__main__":
+    # Запускается САМЫМ первым, до всего остального: доставка недоставленных
+    # событий из durable-outbox (services/outbox.py) в SmartParking логически
+    # не зависит ни от конфига камеры, ни от логина в неё по SDK - раньше
+    # drain-поток стартовал только после успешного логина в камеру
+    # (traffic_monitor.py), и при неверных кредах/заблокированном аккаунте
+    # камеры (реальный, часто повторяющийся сценарий на этом объекте)
+    # накопленные в outbox события не добивались никогда, даже если
+    # SmartParking был прекрасно доступен.
+    start_background_drain()
+
     # Ретраи на случай, если SmartParking ещё не поднялся (общий docker
     # compose стек, порядок старта не гарантирован).
     camera = None

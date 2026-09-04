@@ -2,3 +2,18 @@ venv/
 __pycache__/
 *.pyc
 ./venv
+CONTEXT.md
+
+# Локальные секреты/раннтайм-состояние - не для репо ни при каких условиях.
+.env
+docker-compose.local.yml
+
+# data/<role>_<slot>/ - примонтированный runtime-каталог контейнера:
+# таймстемпнутые логи (logger.py создаёт новый файл на каждый старт
+# процесса) + outbox.db (SQLite-очередь недоставленных событий, + -wal/-shm
+# в WAL-режиме) + debug-снапшоты, если включён SAVE_DEBUG_SNAPSHOTS.
+data/
+*.log
+*.db
+*.db-wal
+*.db-shm
