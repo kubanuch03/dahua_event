@@ -31,7 +31,7 @@ def start_traffic_monitor(
     camera_code,
     camera_name, # <-- Правильный порядок
     camera_id, # <-- Правильный порядок
-    camera_alias=None,
+    camera_routing_key=None,
     ) -> None:
     sdk = NetClient()
     sdk.InitEx(None)
@@ -61,7 +61,7 @@ def start_traffic_monitor(
     callbacks = Callbacks()
     callbacks.set_camera_info(
         camera_code=camera_code, camera_id=camera_id, camera_name=camera_name,
-        camera_alias=camera_alias,
+        camera_routing_key=camera_routing_key,
     )
     channel = 0
     attachID = sdk.RealLoadPictureEx(

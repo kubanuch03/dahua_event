@@ -33,14 +33,14 @@ class Callbacks:
     camera_code = None
     camera_id = None
     camera_name = None
-    camera_alias = None
+    camera_routing_key = None
 
     @classmethod
-    def set_camera_info(cls, camera_code, camera_id, camera_name, camera_alias=None):
+    def set_camera_info(cls, camera_code, camera_id, camera_name, camera_routing_key=None):
         cls.camera_code = camera_code
         cls.camera_id = camera_id
         cls.camera_name = camera_name
-        cls.camera_alias = camera_alias
+        cls.camera_routing_key = camera_routing_key
 
     @CB_FUNCTYPE(
         None, c_longlong, c_ulong, c_void_p, POINTER(c_ubyte),
@@ -53,7 +53,7 @@ class Callbacks:
         camera_code = Callbacks.camera_code
         camera_id = Callbacks.camera_id
         camera_name = Callbacks.camera_name
-        camera_alias = Callbacks.camera_alias
+        camera_routing_key = Callbacks.camera_routing_key
 
         global callback_num
         if dwAlarmType == EM_EVENT_IVS_TYPE.TRAFFICJUNCTION:
@@ -77,12 +77,13 @@ class Callbacks:
                     "license_plate_country": "KG", 
                     "color": a.get("vehicle_color_str", "unknown"),
                     "event_id": f"{camera_id}_{callback_num}",
-                    # camera_alias идёт от SmartParking (Camera.alias в БД,
-                    # см. CameraConfigAPIView) - DataProcessor резолвит
-                    # камеру ТОЛЬКО точным совпадением по alias, хардкод
-                    # здесь ломал бы это молча на любом объекте кроме
-                    # Balykchy.
-                    "camera": camera_alias,
+                    # camera_routing_key = "{CAMERA_ROLE}_{CAMERA_SLOT}",
+                    # построен в main.py из СВОИХ ЖЕ env-переменных этого
+                    # контейнера (не из Camera.alias - тот теперь только
+                    # для отображения в админке). DataProcessor резолвит
+                    # камеру по (Camera.action, Camera.slot), см.
+                    # parking_service.py::_resolve_camera_by_slot_key.
+                    "camera": camera_routing_key,
                     "recognize": "Dahua SDK Direct",
                 }
                 

@@ -39,19 +39,26 @@ def fetch_cameras():
 
 def get_camera_for_this_slot():
     """
-    Забирает актуальный список камер у SmartParking, фильтрует по роли
-    (CAMERA_ROLE) и берёт CAMERA_SLOT-ую по порядку (1-indexed) - так один
-    и тот же образ обслуживает несколько физических камер одной роли
-    (2 въезда, 2 выезда), просто с разным CAMERA_SLOT в env.
+    Забирает актуальный список камер у SmartParking и резолвит СВОЮ (по
+    точному совпадению action+slot, не по позиции в списке - раньше брали
+    CAMERA_SLOT-ую по порядку (`cameras[CAMERA_SLOT - 1]`), а Django ничего
+    не гарантирует насчёт порядка без explicit order_by, так что "второй
+    въезд" мог тихо съехать на другую физическую камеру при любом
+    изменении набора камер в БД). Ровно 0 или 2+ совпадений - explicit
+    ошибка конфигурации, а не тихий выбор не той камеры.
     """
     action = ROLE_TO_ACTION[CAMERA_ROLE]
-    cameras = [c for c in fetch_cameras() if c.get("action") == action]
-    if len(cameras) < CAMERA_SLOT:
+    cameras = [
+        c for c in fetch_cameras()
+        if c.get("action") == action and c.get("slot") == CAMERA_SLOT
+    ]
+    if len(cameras) != 1:
         raise RuntimeError(
             f"SmartParking вернул {len(cameras)} камер с action={action!r}, "
-            f"а запрошен CAMERA_SLOT={CAMERA_SLOT} - недостаточно записей."
+            f"slot={CAMERA_SLOT} - ожидалась ровно одна. Проверьте Camera.slot "
+            f"в админке (это НЕ то же самое, что alias)."
         )
-    return cameras[CAMERA_SLOT - 1]
+    return cameras[0]
 
 
 def start_monitor_for_camera(camera):
@@ -62,21 +69,18 @@ def start_monitor_for_camera(camera):
         camera_password = camera["password"]
         camera_id = camera.get("id", 1)
         camera_name = camera.get("name") or f"{CAMERA_ROLE}-{CAMERA_SLOT}"
-        camera_alias = camera.get("alias")
+        # Ключ маршрутизации строим из СВОИХ ЖЕ env-переменных, не из
+        # camera["alias"] - тот теперь только человекочитаемая метка в
+        # админке SmartParking, её можно переименовать без последствий.
+        # DataProcessor.data_event_processing() на SmartParking резолвит
+        # камеру по (action, slot), не по alias (см. _resolve_camera_by_slot_key
+        # в parking_service.py).
+        camera_routing_key = f"{CAMERA_ROLE}_{CAMERA_SLOT}"
         camera_code = 8
         logger.info(
-            f"Starting traffic monitor for camera {camera_id} at {camera_ip}:{camera_port} (alias={camera_alias!r})"
+            f"Starting traffic monitor for camera {camera_id} at {camera_ip}:{camera_port} "
+            f"(routing_key={camera_routing_key!r}, alias={camera.get('alias')!r})"
         )
-        if not camera_alias:
-            # DataProcessor.data_event_processing() на SmartParking резолвит
-            # камеру ТОЛЬКО точным совпадением по Camera.alias - без него
-            # каждое событие проезда будет молча отклонено с "Камера не
-            # найдена". Не блокируем старт (SDK-коннект и логи всё ещё
-            # полезны для диагностики), но кричим в лог сразу, а не постфактум.
-            logger.error(
-                f"У камеры {camera_id} не задан alias в SmartParking - "
-                f"события проезда будут отклоняться до заполнения Camera.alias в БД."
-            )
         # Именованные аргументы намеренно - позиционные camera_id/camera_name
         # в оригинале Balykchy были перепутаны местами относительно
         # сигнатуры start_traffic_monitor (см. services/traffic_monitor.py)
@@ -89,7 +93,7 @@ def start_monitor_for_camera(camera):
             camera_code=camera_code,
             camera_name=camera_name,
             camera_id=camera_id,
-            camera_alias=camera_alias,
+            camera_routing_key=camera_routing_key,
         )
     except Exception as e:
         logger.error(f"Failed to start monitor for camera {camera.get('id')}: {e}")
