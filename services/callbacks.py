@@ -215,8 +215,39 @@ class Callbacks:
             elif plate_number_from_sdk and plate_number_from_sdk.strip():
                 smart_parking_data = {
                     "license_plate": plate_number_from_sdk.strip(),
+                    # НАМЕРЕННО константа, а не распознанная камерой страна
+                    # (та уходит отдельным полем plate_country ниже).
+                    # SmartParking считает по этому полю ДЕНЬГИ: в
+                    # price_calculation/{first,add}_payment.py стоит
+                    # `if license_plate_country != KG` (KG = "KG"), и любое
+                    # другое значение переводит машину на иностранный тариф
+                    # base_external_amount/add_external_amount. Пока не
+                    # увидим на реальном трафике, что именно отдаёт камера в
+                    # szCountry ("KG"? "KGZ"? пусто?), подставлять сюда
+                    # значение из SDK нельзя - одна неудачная строка
+                    # переведёт весь местный поток на чужой тариф.
                     "license_plate_country": "KG",
                     "color": a.get("vehicle_color_str", "unknown"),
+                    # Цвет номера и марка - камера распознаёт их сама и
+                    # отдаёт даром, раньше они просто выбрасывались.
+                    # Жёлтый номер в KG = коммерческий транспорт, марка -
+                    # 147 логотипов по даташиту DHI-ITC413-PW4D.
+                    "plate_color": a.get("plate_color_str") or "unknown",
+                    "vehicle_brand": a.get("vehicle_sign_str") or "unknown",
+                    # Тип кузова - то же значение, по которому выше работает
+                    # фильтр "транспорт или пешеход" (_should_report). До
+                    # SmartParking оно раньше не доезжало, хотя камера
+                    # отдаёт его в каждом событии: SaloonCar, SUV, Pickup,
+                    # MPV, Microbus, MicroTruck и т.д. Именно на этом поле
+                    # вылез Twocycle, из-за которого велосипед однажды
+                    # получил парковочную сессию, - на сервере оно теперь
+                    # видно в админке, а не только в логах моста.
+                    "body_type": a.get("object_subType_str") or "unknown",
+                    # Страна номера, как её распознала камера. Отдельно от
+                    # license_plate_country (см. выше) - это справочное
+                    # значение, на тариф оно не влияет. Пустая строка
+                    # означает "камера не определила" (nRegionCode = -1).
+                    "plate_country": a.get("plate_country_str") or "unknown",
                     "event_id": f"{camera_id}_{callback_num}",
                     # camera_routing_key = "{CAMERA_ROLE}_{CAMERA_SLOT}",
                     # построен в main.py из СВОИХ ЖЕ env-переменных этого
