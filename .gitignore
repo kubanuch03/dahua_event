@@ -17,3 +17,6 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# Локальное переопределение сети: на каждой машине своё.
+docker-compose.override.yml
