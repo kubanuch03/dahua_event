@@ -160,3 +160,55 @@ class TestPlateConfidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CountryOffsetDriftTests(unittest.TestCase):
+    """
+    Страна номера лежит в памяти не там, где её объявляет обёртка NetSDK.
+
+    Замерено на боевой камере ITC413 (прошивка 5.003.0000000.3.R,
+    15.09.2026): обёртка объявляет szCountry по смещению 2076, реальная
+    строка "KGZ" - на 2084. Штатное поле поэтому пустое во всех событиях,
+    и без обхода страна не доезжает до SmartParking вообще.
+    """
+
+    def _comm_info(self, payload: bytes, drift: int):
+        """ctypes-структура, где строка лежит со сдвигом от объявленного поля."""
+        import ctypes
+
+        class FakeCommInfoStruct(ctypes.Structure):
+            _fields_ = [
+                ("bReserved", ctypes.c_byte * 16),
+                ("szCountry", ctypes.c_char * 20),
+                ("bTail", ctypes.c_byte * 32),
+            ]
+
+        info = FakeCommInfoStruct()
+        info.szProvince = b""
+        offset = FakeCommInfoStruct.szCountry.offset + drift
+        buf = (ctypes.c_char * len(payload)).from_buffer(info, offset)
+        buf.raw = payload
+        return info
+
+    def test_country_read_from_drifted_offset(self):
+        info = self._comm_info(b"KGZ\x00", drift=8)
+        parser = TrafficCallBackAlarmInfo()
+        self.assertEqual(parser._read_country(info), "KGZ")
+
+    def test_declared_field_wins_when_filled(self):
+        """Если обёртку починят, берём штатное поле и никуда не лезем."""
+        info = self._comm_info(b"XXX\x00", drift=8)
+        info.szCountry = b"KGZ"
+        parser = TrafficCallBackAlarmInfo()
+        self.assertEqual(parser._read_country(info), "KGZ")
+
+    def test_garbage_at_drifted_offset_is_ignored(self):
+        """Читаем из области, которую обёртка считает резервом - мусор в базу не пускаем."""
+        info = self._comm_info(b"\x01\x02\xff\x00", drift=8)
+        parser = TrafficCallBackAlarmInfo()
+        self.assertEqual(parser._read_country(info), "")
+
+    def test_plain_object_without_ctypes_does_not_raise(self):
+        """Фейки из остальных тестов - не ctypes; фолбэк обязан промолчать."""
+        parser = TrafficCallBackAlarmInfo()
+        self.assertEqual(parser._read_country(FakeCommInfo(country=b"")), "")
+

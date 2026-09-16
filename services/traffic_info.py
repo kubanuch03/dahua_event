@@ -1,3 +1,5 @@
+import re
+
 from logger import get_logger
 
 logger = get_logger("TRAFFIC INFO")
@@ -59,7 +61,7 @@ class TrafficCallBackAlarmInfo:
         # приходят пустыми (nRegionCode при этом -1). Обработка пустого
         # значения - на стороне вызывающего (callbacks.py), здесь честно
         # отдаём то, что сказала камера.
-        self.plate_country_str = self._decode_string(alarm_info.stCommInfo.szCountry)
+        self.plate_country_str = self._read_country(alarm_info.stCommInfo)
         self.plate_province_str = self._decode_string(alarm_info.stCommInfo.szProvince)
         # Уверенность распознавания НОМЕРА. В событии TrafficJunction
         # stuObject - это номерной знак (машина - в stuVehicle), nConfidence
@@ -125,6 +127,58 @@ class TrafficCallBackAlarmInfo:
         except Exception:  # noqa: BLE001
             pass
         return " ".join(parts)
+
+    #: На сколько байт реальное положение szCountry в памяти события
+    #: разошлось с тем, что объявляет обёртка NetSDK. Замерено на ITC413
+    #: (DHI-ITC413-PW4D-IZ1, прошивка 5.003.0000000.3.R от 2024-12-20,
+    #: 15.09.2026): обёртка объявляет szCountry по смещению 2076, строка
+    #: "KGZ" лежит на 2084. Поле дописано в самый хвост EVENT_COMM_INFO,
+    #: сразу за bReserved*112, и ревизия структуры в прошивке отличается
+    #: от той, по которой собрана обёртка.
+    _COUNTRY_OFFSET_DRIFT = 8
+
+    #: Правдоподобное значение страны: латиница, 2-19 символов ("KGZ",
+    #: "Unknown"). Нужна именно проверка, а не доверие байтам: читаем из
+    #: области, которую обёртка считает резервом, и мусор оттуда попал бы
+    #: в базу как название страны.
+    _COUNTRY_RE = re.compile(rb"^[A-Za-z]{2,19}$")
+
+    def _read_country(self, comm_info):
+        """
+        Страна номера с обходом расхождения layout'а обёртки и прошивки.
+
+        Сначала штатное поле - если однажды обёртку NetSDK или прошивку
+        приведут в соответствие, оно заработает само и обход не понадобится.
+        Пока оно пустое во ВСЕХ событиях: замер по 30 151 событию боевой
+        базы Ала-Арчи - страна не определилась ни разу, при том что цвет
+        номера из соседней структуры приходит в 99.7-100%. По HTTP та же
+        камера отдаёт Country="KGZ", то есть данные есть, теряются на
+        стыке.
+
+        Фолбэк читает те же байты со смещением _COUNTRY_OFFSET_DRIFT и
+        проверяет результат на правдоподобие. Любая неожиданность - не
+        ctypes-структура, короткий буфер, мусор в байтах - это пустая
+        строка, как и раньше: потерять справочное поле несопоставимо
+        дешевле, чем уронить колбэк и потерять сам проезд.
+        """
+        value = self._decode_string(comm_info.szCountry).strip()
+        if value:
+            return value
+
+        try:
+            import ctypes
+
+            raw = ctypes.string_at(ctypes.byref(comm_info), ctypes.sizeof(comm_info))
+            offset = type(comm_info).szCountry.offset + self._COUNTRY_OFFSET_DRIFT
+            chunk = raw[offset:offset + 20].split(b"\x00")[0]
+        except Exception:
+            # Не ctypes-структура (тесты с фейками) или SDK отдал что-то
+            # неожиданное - молча остаёмся без страны.
+            return ""
+
+        if not self._COUNTRY_RE.match(chunk):
+            return ""
+        return chunk.decode("ascii", "replace")
 
     def _decode_string(self, byte_string, encoding="utf-8"):
         # errors="replace", а не строгий режим: эти байты приходят прямо из
