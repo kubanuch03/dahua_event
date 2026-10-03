@@ -5,6 +5,7 @@ from NetSDK.SDK_Callback import (
     NET_IN_LOGIN_WITH_HIGHLEVEL_SECURITY,
     NET_OUT_LOGIN_WITH_HIGHLEVEL_SECURITY,
 )
+import os
 import time
 from logger import get_logger
 from ctypes import CFUNCTYPE, c_int, c_void_p, byref, sizeof
@@ -83,6 +84,20 @@ def start_traffic_monitor(
         "Subscription to traffic junction events successful. Monitoring started."
     )
 
+    # «Стоит в зоне у стрелы» (IVS WanderDetection) - вторая подписка, тем
+    # же колбэком. Не вышло (правило не включено, прошивка не умеет) -
+    # распознавание номеров работает как раньше, только предупреждение.
+    wander_attach = None
+    if os.environ.get("IVS_WANDER", "true").lower() != "false":
+        wander_attach = sdk.RealLoadPictureEx(
+            loginID, channel, EM_EVENT_IVS_TYPE.WANDERDETECTION, 1,
+            callbacks.AnalyzerDataCallBack, 0, None,
+        )
+        if wander_attach:
+            logger.info("Subscription to WanderDetection (stays in zone) successful.")
+        else:
+            logger.warning(f"WanderDetection subscription failed: {sdk.GetLastError()} - ANPR continues.")
+
     # Drain-поток durable-outbox запускается в main.py, ДО этой функции и
     # ДО попытки логина в камеру (см. main.py) - раздача событий из
     # очереди в SmartParking логически не зависит от того, доступна ли
@@ -98,6 +113,8 @@ def start_traffic_monitor(
     except KeyboardInterrupt:
         logger.info("Stopping the monitoring...")
 
+    if wander_attach:
+        sdk.StopLoadPic(wander_attach)
     sdk.StopLoadPic(attachID)
     sdk.Logout(loginID)
     sdk.Cleanup()

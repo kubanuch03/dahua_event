@@ -3,6 +3,7 @@ import os
 import time
 from ctypes import cast, POINTER, c_ubyte, c_longlong, c_ulong, c_void_p, c_ulonglong, c_int
 from services.traffic_info import TrafficCallBackAlarmInfo
+from services.wander_info import PulseThrottle, build_payload as build_wander_payload
 # --- УДАЛЕНО --- Убираем зависимость от внешнего сервиса Autovision
 # from services.autovision import StateNumberDetector 
 from services.smart_parking import SmartParking
@@ -113,6 +114,8 @@ def _log_unrecognized_subtype(subtype: str, plate: str) -> None:
 # the SDK re-hitting nSequence==1 twice for what should be one crossing
 # (firmware quirks, retriggers) - one process per camera (see main.py), so
 # no cross-camera key collisions possible.
+_wander_throttle = PulseThrottle()
+
 _recent_pushes = {}
 _DEDUP_WINDOW_SECONDS = 15
 
@@ -315,6 +318,32 @@ class Callbacks:
                     )
             else:
                 logger.warning("No license plate detected by camera SDK. Skipping SmartParking.")
+
+        elif dwAlarmType == EM_EVENT_IVS_TYPE.WANDERDETECTION:
+            # «Стоит в зоне у стрелы» - продлевает ожидание в SmartParking
+            # («Долгое ожидание»). Номера нет: его берёт SmartParking из
+            # последнего распознавания на этом гейте. Любая ошибка здесь не
+            # должна ронять ctypes-колбэк - распознавание номеров идёт тем же.
+            try:
+                from NetSDK.SDK_Struct import NET_A_DEV_EVENT_WANDER_INFO
+
+                info = cast(pAlarmInfo, POINTER(NET_A_DEV_EVENT_WANDER_INFO)).contents
+                payload = build_wander_payload(info, camera_id=camera_id, routing_key=camera_routing_key)
+                if payload is None:
+                    logger.debug("WanderDetection: не машина - пропуск")
+                elif not _wander_throttle.allow(camera_id, payload["dwell_action"], time.monotonic()):
+                    logger.debug("WanderDetection: pulse в окне - пропуск")
+                else:
+                    image = None
+                    if payload["dwell_action"] == "start" and dwBufSize > 0:
+                        try:
+                            image = bytes(cast(pBuffer, POINTER(c_ubyte * dwBufSize)).contents)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(f"WanderDetection: кадр не извлечён: {e}")
+                    logger.info(f"Queueing WanderDetection for SmartParking: {payload}")
+                    outbox.enqueue(payload, image)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"WanderDetection: событие не обработано: {e}")
 
             # 4. Логика сохранения изображений - тоже под SAVE_DEBUG_SNAPSHOTS,
             # иначе КАЖДОЕ срабатывание камеры без распознанного номера
