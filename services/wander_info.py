@@ -14,7 +14,9 @@ from __future__ import annotations
 ACTIONS = {0: "pulse", 1: "start", 2: "stop"}
 
 # Объекты, которые нас интересуют: машина. Пешеход в зоне шлагбаума - не повод.
-_VEHICLE_TYPES = {"vehicle", "motorvehicle", "car", "nonmotor"}
+# Велосипеды и мопеды (NonMotor) - не машины, как и в фильтре ANPR
+# (callbacks._NON_VEHICLE_SUBTYPES).
+_VEHICLE_TYPES = {"vehicle", "motorvehicle", "car"}
 
 
 def _text(raw) -> str:
@@ -25,15 +27,15 @@ def _text(raw) -> str:
 
 
 def _iso(utc) -> str:
+    """Время события или "" - кривое время (месяц 0, 31 февраля) не отправляем."""
+    from datetime import datetime
+
     try:
-        if not utc.dwYear:
-            return ""
-        return (
-            f"{utc.dwYear:04}-{utc.dwMonth:02}-{utc.dwDay:02}T"
-            f"{utc.dwHour:02}:{utc.dwMinute:02}:{utc.dwSecond:02}Z"
-        )
+        moment = datetime(int(utc.dwYear), int(utc.dwMonth), int(utc.dwDay),
+                          int(utc.dwHour), int(utc.dwMinute), int(utc.dwSecond))
     except Exception:  # noqa: BLE001 - кривое время не должно терять событие
         return ""
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def object_types(info) -> list[str]:

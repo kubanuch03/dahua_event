@@ -53,6 +53,14 @@ class TestWanderPayload(unittest.TestCase):
         self.assertIsNotNone(build_payload(FakeWander(objects=()), camera_id="c", routing_key="r"))
         self.assertTrue(is_vehicle(["Human", "Vehicle"]))
 
+    def test_nonmotor_is_not_a_car(self):
+        self.assertIsNone(build_payload(FakeWander(objects=("NonMotor",)), camera_id="c", routing_key="r"))
+
+    def test_garbage_date_gives_empty_time(self):
+        w = FakeWander()
+        w.UTC.dwMonth = 0
+        self.assertEqual(build_payload(w, camera_id="c", routing_key="r")["event_time"], "")
+
     def test_broken_time_does_not_lose_event(self):
         w = FakeWander()
         w.UTC = object()
@@ -77,3 +85,14 @@ class TestPulseThrottle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCallbackLayout(unittest.TestCase):
+    """Отладочные кадры ANPR остались в ветке TRAFFICJUNCTION, а не уехали в WANDER."""
+
+    def test_debug_snapshots_block_is_before_wander_branch(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "services", "callbacks.py")).read()
+        debug = src.index("# 4. Логика сохранения изображений")
+        wander = src.index("elif dwAlarmType == EM_EVENT_IVS_TYPE.WANDERDETECTION")
+        self.assertLess(debug, wander)

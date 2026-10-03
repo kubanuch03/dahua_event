@@ -319,32 +319,6 @@ class Callbacks:
             else:
                 logger.warning("No license plate detected by camera SDK. Skipping SmartParking.")
 
-        elif dwAlarmType == EM_EVENT_IVS_TYPE.WANDERDETECTION:
-            # «Стоит в зоне у стрелы» - продлевает ожидание в SmartParking
-            # («Долгое ожидание»). Номера нет: его берёт SmartParking из
-            # последнего распознавания на этом гейте. Любая ошибка здесь не
-            # должна ронять ctypes-колбэк - распознавание номеров идёт тем же.
-            try:
-                from NetSDK.SDK_Struct import NET_A_DEV_EVENT_WANDER_INFO
-
-                info = cast(pAlarmInfo, POINTER(NET_A_DEV_EVENT_WANDER_INFO)).contents
-                payload = build_wander_payload(info, camera_id=camera_id, routing_key=camera_routing_key)
-                if payload is None:
-                    logger.debug("WanderDetection: не машина - пропуск")
-                elif not _wander_throttle.allow(camera_id, payload["dwell_action"], time.monotonic()):
-                    logger.debug("WanderDetection: pulse в окне - пропуск")
-                else:
-                    image = None
-                    if payload["dwell_action"] == "start" and dwBufSize > 0:
-                        try:
-                            image = bytes(cast(pBuffer, POINTER(c_ubyte * dwBufSize)).contents)
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(f"WanderDetection: кадр не извлечён: {e}")
-                    logger.info(f"Queueing WanderDetection for SmartParking: {payload}")
-                    outbox.enqueue(payload, image)
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"WanderDetection: событие не обработано: {e}")
-
             # 4. Логика сохранения изображений - тоже под SAVE_DEBUG_SNAPSHOTS,
             # иначе КАЖДОЕ срабатывание камеры без распознанного номера
             # (а таких большинство - блики, случайные объекты) пишет файл
@@ -363,3 +337,25 @@ class Callbacks:
                     logger.debug(f"Saved event image for debugging: {global_img_path}")
                 except Exception as e:
                     logger.error(f"Error saving event image: {e}")
+
+        elif dwAlarmType == EM_EVENT_IVS_TYPE.WANDERDETECTION:
+            # «Стоит в зоне у стрелы» - продлевает ожидание в SmartParking
+            # («Долгое ожидание»). Номера нет: его берёт SmartParking из
+            # последнего распознавания на этом гейте. Любая ошибка здесь не
+            # должна ронять ctypes-колбэк - распознавание номеров идёт тем же.
+            try:
+                from NetSDK.SDK_Struct import NET_A_DEV_EVENT_WANDER_INFO
+
+                info = cast(pAlarmInfo, POINTER(NET_A_DEV_EVENT_WANDER_INFO)).contents
+                payload = build_wander_payload(info, camera_id=camera_id, routing_key=camera_routing_key)
+                if payload is None:
+                    logger.debug("WanderDetection: не машина - пропуск")
+                elif not _wander_throttle.allow(camera_id, payload["dwell_action"], time.monotonic()):
+                    logger.debug("WanderDetection: pulse в окне - пропуск")
+                else:
+                    # Без кадра: SmartParking его не читает, а очередь общая с
+                    # проездами - лишние полмегабайта стояли бы перед номерами.
+                    logger.info(f"Queueing WanderDetection for SmartParking: {payload}")
+                    outbox.enqueue(payload, None)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"WanderDetection: событие не обработано: {e}")
