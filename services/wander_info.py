@@ -14,9 +14,12 @@ from __future__ import annotations
 ACTIONS = {0: "pulse", 1: "start", 2: "stop"}
 
 # Объекты, которые нас интересуют: машина. Пешеход в зоне шлагбаума - не повод.
-# Велосипеды и мопеды (NonMotor) - не машины, как и в фильтре ANPR
-# (callbacks._NON_VEHICLE_SUBTYPES).
-_VEHICLE_TYPES = {"vehicle", "motorvehicle", "car"}
+# Не машины: люди, велосипеды и мопеды (NonMotor) - как в фильтре ANPR
+# (callbacks._NON_VEHICLE_SUBTYPES). Всё, где есть «vehicle», - машина:
+# правило на камере выезда Ала-Арчи настроено на Vehicle И NoPlateVehicle
+# (машина без распознанного номера), и прежний точный список молча
+# отбрасывал второй тип ([GPU archa], 04.10.2026: 19 ч - 0 событий).
+_NOT_VEHICLE = {"human", "nonmotor", "bicycle", "motorcycle", "tricycle", "animal"}
 
 
 def _text(raw) -> str:
@@ -50,7 +53,10 @@ def is_vehicle(types) -> bool:
     """Нет данных об объекте - считаем машиной: правило стоит на полосе машин."""
     if not types:
         return True
-    return any(t.strip().lower() in _VEHICLE_TYPES for t in types)
+    kinds = [t.strip().lower() for t in types if t and t.strip()]
+    if not kinds:
+        return True
+    return any(k not in _NOT_VEHICLE and ("vehicle" in k or k == "car") for k in kinds)
 
 
 def build_payload(info, *, camera_id, routing_key) -> dict | None:

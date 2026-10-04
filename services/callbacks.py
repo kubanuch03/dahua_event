@@ -357,10 +357,18 @@ class Callbacks:
             try:
                 from NetSDK.SDK_Struct import NET_A_DEV_EVENT_WANDER_INFO
 
+                from services.wander_info import ACTIONS, object_types
+
                 info = cast(pAlarmInfo, POINTER(NET_A_DEV_EVENT_WANDER_INFO)).contents
+                # Каждое полученное событие - в INFO: без этого «0 событий»
+                # не отличить от «пришли и отброшены» (04.10.2026).
+                logger.info(
+                    f"WanderDetection received: action={ACTIONS.get(int(info.bEventAction), info.bEventAction)} "
+                    f"event_id={info.nEventID} objects={object_types(info)}"
+                )
                 payload = build_wander_payload(info, camera_id=camera_id, routing_key=camera_routing_key)
                 if payload is None:
-                    logger.debug("WanderDetection: не машина - пропуск")
+                    logger.info("WanderDetection: не машина - пропуск")
                 elif not _wander_throttle.allow(camera_id, payload["dwell_action"], time.monotonic()):
                     logger.debug("WanderDetection: pulse в окне - пропуск")
                 else:

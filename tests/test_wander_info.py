@@ -53,6 +53,12 @@ class TestWanderPayload(unittest.TestCase):
         self.assertIsNotNone(build_payload(FakeWander(objects=()), camera_id="c", routing_key="r"))
         self.assertTrue(is_vehicle(["Human", "Vehicle"]))
 
+    def test_no_plate_vehicle_is_a_car(self):
+        """На Ала-Арче правило настроено на Vehicle и NoPlateVehicle - второй тоже машина."""
+        self.assertIsNotNone(build_payload(FakeWander(objects=("NoPlateVehicle",)), camera_id="c", routing_key="r"))
+        self.assertTrue(is_vehicle(["NonMotor", "NoPlateVehicle"]))
+        self.assertFalse(is_vehicle(["Human"]))
+
     def test_nonmotor_is_not_a_car(self):
         self.assertIsNone(build_payload(FakeWander(objects=("NonMotor",)), camera_id="c", routing_key="r"))
 
