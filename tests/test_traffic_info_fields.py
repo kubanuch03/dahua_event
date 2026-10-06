@@ -49,6 +49,11 @@ class FakeCommInfo:
         self.szProvince = province
 
 
+class FakeObject:
+    def __init__(self, confidence):
+        self.nConfidence = confidence
+
+
 class FakeAlarmInfo:
     def __init__(self, **kw):
         self.UTC = FakeUTC()
@@ -58,6 +63,7 @@ class FakeAlarmInfo:
         self.stuVehicle = FakeVehicle(**{k: v for k, v in kw.items() if k == "subtype"})
         self.stCommInfo = FakeCommInfo(**{k: v for k, v in kw.items()
                                           if k in ("country", "province")})
+        self.stuObject = FakeObject(kw.get("confidence", 230))
 
 
 class TestNewRecognitionFields(unittest.TestCase):
@@ -101,6 +107,35 @@ class TestNewRecognitionFields(unittest.TestCase):
         alarm.stTrafficCar.szVehicleSign = None
         info = TrafficCallBackAlarmInfo().get_alarm_info(alarm)
         self.assertEqual(info["vehicle_sign_str"], "")
+
+
+
+class TestPlateConfidence(unittest.TestCase):
+    """stuObject.nConfidence (0..255) - уверенность распознавания номера, в процентах."""
+
+    def test_confidence_scaled_to_percent(self):
+        info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=230))
+        self.assertEqual(info["plate_confidence_raw"], 230)
+        self.assertEqual(info["plate_confidence_pct"], 90)
+
+    def test_scale_edges(self):
+        for raw, pct in ((255, 100), (1, 0), (128, 50)):
+            info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=raw))
+            self.assertEqual(info["plate_confidence_pct"], pct, raw)
+
+    def test_zero_and_out_of_range_mean_not_reported(self):
+        """Прошивка, не заполняющая поле, шлёт 0 - это «не сообщила», а не 0 %."""
+        for raw in (0, -1, 256, 1000):
+            info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=raw))
+            self.assertIsNone(info["plate_confidence_pct"], raw)
+            self.assertIsNone(info["plate_confidence_raw"], raw)
+
+    def test_missing_field_does_not_lose_the_event(self):
+        alarm = FakeAlarmInfo()
+        del alarm.stuObject
+        info = TrafficCallBackAlarmInfo().get_alarm_info(alarm)
+        self.assertIsNone(info["plate_confidence_pct"])
+        self.assertEqual(info["plate_number_str"], "01577AGZ")
 
 
 if __name__ == "__main__":

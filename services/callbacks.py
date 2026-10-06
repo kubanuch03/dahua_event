@@ -251,6 +251,10 @@ class Callbacks:
                     # значение, на тариф оно не влияет. Пустая строка
                     # означает "камера не определила" (nRegionCode = -1).
                     "plate_country": a.get("plate_country_str") or "unknown",
+                    # Уверенность распознавания номера, 0..100 %; None - камера
+                    # не сообщила (см. traffic_info._read_confidence). В
+                    # SmartParking видна только администраторам.
+                    "plate_confidence": a.get("plate_confidence_pct"),
                     "event_id": f"{camera_id}_{callback_num}",
                     # camera_routing_key = "{CAMERA_ROLE}_{CAMERA_SLOT}",
                     # построен в main.py из СВОИХ ЖЕ env-переменных этого
@@ -291,7 +295,10 @@ class Callbacks:
                         logger.error(f"Error extracting or saving image: {e}")
 
                 try:
-                    logger.info(f"Queueing for SmartParking (from SDK): {smart_parking_data}")
+                    logger.info(
+                        f"Queueing for SmartParking (from SDK): {smart_parking_data} "
+                        f"nConfidence={a.get('plate_confidence_raw')}"
+                    )
                     # Единственный путь доставки - durable outbox +
                     # фоновый drain-поток (start_background_drain). Раньше
                     # этот же поток захвата ЕЩЁ и пытался отправить событие

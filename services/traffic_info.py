@@ -14,6 +14,8 @@ class TrafficCallBackAlarmInfo:
         self.vehicle_sign_str = ""
         self.plate_country_str = ""
         self.plate_province_str = ""
+        self.plate_confidence_raw = None
+        self.plate_confidence_pct = None
 
     def get_alarm_info(self, alarm_info):
         self.time_str = (
@@ -58,8 +60,32 @@ class TrafficCallBackAlarmInfo:
         # отдаём то, что сказала камера.
         self.plate_country_str = self._decode_string(alarm_info.stCommInfo.szCountry)
         self.plate_province_str = self._decode_string(alarm_info.stCommInfo.szProvince)
+        # Уверенность распознавания НОМЕРА. В событии TrafficJunction
+        # stuObject - это номерной знак (машина - в stuVehicle), nConfidence
+        # по заголовку NetSDK 2.0.0.1: 0..255, больше - увереннее. Отдаём в
+        # процентах (0..100) и сырым значением - для сверки на живом потоке:
+        # заполняет ли поле прошивка ITC413 5.003, ещё не проверено (у
+        # szCountry обёртка уже читала мимо данных, см. fix/plate-country-offset).
+        self.plate_confidence_raw, self.plate_confidence_pct = self._read_confidence(alarm_info)
 
         return self._get_alarm_info_dict()
+
+    @staticmethod
+    def _read_confidence(alarm_info):
+        """
+        (сырое 0..255, проценты 0..100) или (None, None).
+
+        0 и значения вне шкалы - «камера не сообщила», а не «уверена на 0 %»:
+        прошивка, не заполняющая поле, присылает 0, и показывать его как
+        процент значило бы ложно помечать каждый проезд недостоверным.
+        """
+        try:
+            raw = int(alarm_info.stuObject.nConfidence)
+        except Exception:  # noqa: BLE001 - поле необязательное, проезд не терять
+            return None, None
+        if raw <= 0 or raw > 255:
+            return None, None
+        return raw, round(raw * 100 / 255)
 
     def _decode_string(self, byte_string, encoding="utf-8"):
         # errors="replace", а не строгий режим: эти байты приходят прямо из
@@ -86,4 +112,6 @@ class TrafficCallBackAlarmInfo:
             "vehicle_sign_str": self.vehicle_sign_str,
             "plate_country_str": self.plate_country_str,
             "plate_province_str": self.plate_province_str,
+            "plate_confidence_raw": self.plate_confidence_raw,
+            "plate_confidence_pct": self.plate_confidence_pct,
         }
