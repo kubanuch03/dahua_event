@@ -65,7 +65,7 @@ class FakeAlarmInfo:
         self.stuVehicle = FakeVehicle(**{k: v for k, v in kw.items() if k == "subtype"})
         self.stCommInfo = FakeCommInfo(**{k: v for k, v in kw.items()
                                           if k in ("country", "province")})
-        self.stuObject = FakeObject(kw.get("confidence", 230), kw.get("kind", b"Plate"),
+        self.stuObject = FakeObject(kw.get("confidence", 90), kw.get("kind", b"Plate"),
                                     kw.get("text", b"01577AGZ"))
 
 
@@ -114,21 +114,22 @@ class TestNewRecognitionFields(unittest.TestCase):
 
 
 class TestPlateConfidence(unittest.TestCase):
-    """stuObject.nConfidence (0..255) - уверенность распознавания номера, в процентах."""
+    """stuObject.nConfidence - уверенность распознавания номера. ITC413 шлёт 0..100
+    (сверка на проде 06.10.2026: 78..94), а не 0..255 из заголовка NetSDK."""
 
     def test_confidence_scaled_to_percent(self):
-        info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=230))
-        self.assertEqual(info["plate_confidence_raw"], 230)
-        self.assertEqual(info["plate_confidence_pct"], 90)
+        info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=94))
+        self.assertEqual(info["plate_confidence_raw"], 94)
+        self.assertEqual(info["plate_confidence_pct"], 94)
 
     def test_scale_edges(self):
-        for raw, pct in ((255, 100), (1, 0), (128, 50)):
+        for raw, pct in ((100, 100), (1, 1), (78, 78)):
             info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=raw))
             self.assertEqual(info["plate_confidence_pct"], pct, raw)
 
     def test_zero_and_out_of_range_mean_not_reported(self):
         """Прошивка, не заполняющая поле, шлёт 0 - это «не сообщила», а не 0 %."""
-        for raw in (0, -1, 256, 1000):
+        for raw in (0, -1, 101, 230, 1000):
             info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=raw))
             self.assertIsNone(info["plate_confidence_pct"], raw)
             self.assertIsNone(info["plate_confidence_raw"], raw)
@@ -136,12 +137,12 @@ class TestPlateConfidence(unittest.TestCase):
     def test_non_plate_object_is_ignored(self):
         """stuObject - не номер (машина, пусто) - уверенность не отдаём."""
         info = TrafficCallBackAlarmInfo().get_alarm_info(
-            FakeAlarmInfo(confidence=230, kind=b"Vehicle", text=b""))
+            FakeAlarmInfo(confidence=90, kind=b"Vehicle", text=b""))
         self.assertIsNone(info["plate_confidence_pct"])
 
     def test_plate_text_without_type_is_accepted(self):
         info = TrafficCallBackAlarmInfo().get_alarm_info(
-            FakeAlarmInfo(confidence=230, kind=b"", text=b"01577AGZ"))
+            FakeAlarmInfo(confidence=90, kind=b"", text=b"01577AGZ"))
         self.assertEqual(info["plate_confidence_pct"], 90)
 
     def test_debug_keeps_raw_values_before_filtering(self):

@@ -64,11 +64,9 @@ class TrafficCallBackAlarmInfo:
         self.plate_country_str = self._read_country(alarm_info.stCommInfo)
         self.plate_province_str = self._decode_string(alarm_info.stCommInfo.szProvince)
         # Уверенность распознавания НОМЕРА. В событии TrafficJunction
-        # stuObject - это номерной знак (машина - в stuVehicle), nConfidence
-        # по заголовку NetSDK 2.0.0.1: 0..255, больше - увереннее. Отдаём в
-        # процентах (0..100) и сырым значением - для сверки на живом потоке:
-        # заполняет ли поле прошивка ITC413 5.003, ещё не проверено (у
-        # szCountry обёртка уже читала мимо данных, см. fix/plate-country-offset).
+        # stuObject - это номерной знак (машина - в stuVehicle). Заголовок
+        # NetSDK 2.0.0.1 обещает 0..255, но ITC413 5.003 шлёт 0..100 -
+        # проверено на проде 06.10.2026 (см. _read_confidence).
         self.plate_confidence_raw, self.plate_confidence_pct = self._read_confidence(alarm_info)
         self.confidence_debug = self._confidence_debug(alarm_info)
 
@@ -77,7 +75,7 @@ class TrafficCallBackAlarmInfo:
     @staticmethod
     def _read_confidence(alarm_info):
         """
-        (сырое 0..255, проценты 0..100) или (None, None).
+        (сырое, проценты 0..100) или (None, None).
 
         0 и значения вне шкалы - «камера не сообщила», а не «уверена на 0 %»:
         прошивка, не заполняющая поле, присылает 0, и показывать его как
@@ -96,9 +94,13 @@ class TrafficCallBackAlarmInfo:
             raw = int(obj.nConfidence)
         except Exception:  # noqa: BLE001 - поле необязательное, проезд не терять
             return None, None
-        if raw <= 0 or raw > 255:
+        # Шкала 0..100, а НЕ 0..255 из заголовка NetSDK: сверка на проде
+        # после выката 06.10.2026 - 10 проездов с трёх камер ITC413 5.003,
+        # сырое 78..94, ни одного выше 100; перевод /255 давал 31..37 %.
+        # Выше 100 - шкала неизвестна, процент не выдумываем.
+        if raw <= 0 or raw > 100:
             return None, None
-        return raw, round(raw * 100 / 255)
+        return raw, raw
 
     @staticmethod
     def _raw_text(value) -> str:
