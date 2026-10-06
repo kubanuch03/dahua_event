@@ -158,8 +158,7 @@ class TestPlateConfidence(unittest.TestCase):
         self.assertEqual(info["plate_number_str"], "01577AGZ")
 
 
-if __name__ == "__main__":
-    unittest.main()
+
 
 class CountryOffsetDriftTests(unittest.TestCase):
     """
@@ -193,6 +192,14 @@ class CountryOffsetDriftTests(unittest.TestCase):
         info = self._comm_info(b"KGZ\x00", drift=8)
         parser = TrafficCallBackAlarmInfo()
         self.assertEqual(parser._read_country(info), "KGZ")
+
+    def test_alarm_parsing_uses_the_drift_fallback(self):
+        """Через весь разбор события, а не только _read_country: обход
+        должен быть подключён в get_alarm_info."""
+        alarm = FakeAlarmInfo()
+        alarm.stCommInfo = self._comm_info(b"KGZ\x00", drift=8)
+        info = TrafficCallBackAlarmInfo().get_alarm_info(alarm)
+        self.assertEqual(info["plate_country_str"], "KGZ")
 
     def test_declared_field_wins_when_filled(self):
         """Если обёртку починят, берём штатное поле и никуда не лезем."""
