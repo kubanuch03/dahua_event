@@ -50,8 +50,10 @@ class FakeCommInfo:
 
 
 class FakeObject:
-    def __init__(self, confidence):
+    def __init__(self, confidence, kind=b"Plate", text=b"01577AGZ"):
         self.nConfidence = confidence
+        self.szObjectType = kind
+        self.szText = text
 
 
 class FakeAlarmInfo:
@@ -63,7 +65,8 @@ class FakeAlarmInfo:
         self.stuVehicle = FakeVehicle(**{k: v for k, v in kw.items() if k == "subtype"})
         self.stCommInfo = FakeCommInfo(**{k: v for k, v in kw.items()
                                           if k in ("country", "province")})
-        self.stuObject = FakeObject(kw.get("confidence", 230))
+        self.stuObject = FakeObject(kw.get("confidence", 230), kw.get("kind", b"Plate"),
+                                    kw.get("text", b"01577AGZ"))
 
 
 class TestNewRecognitionFields(unittest.TestCase):
@@ -129,6 +132,23 @@ class TestPlateConfidence(unittest.TestCase):
             info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=raw))
             self.assertIsNone(info["plate_confidence_pct"], raw)
             self.assertIsNone(info["plate_confidence_raw"], raw)
+
+    def test_non_plate_object_is_ignored(self):
+        """stuObject - не номер (машина, пусто) - уверенность не отдаём."""
+        info = TrafficCallBackAlarmInfo().get_alarm_info(
+            FakeAlarmInfo(confidence=230, kind=b"Vehicle", text=b""))
+        self.assertIsNone(info["plate_confidence_pct"])
+
+    def test_plate_text_without_type_is_accepted(self):
+        info = TrafficCallBackAlarmInfo().get_alarm_info(
+            FakeAlarmInfo(confidence=230, kind=b"", text=b"01577AGZ"))
+        self.assertEqual(info["plate_confidence_pct"], 90)
+
+    def test_debug_keeps_raw_values_before_filtering(self):
+        info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo(confidence=300))
+        self.assertIsNone(info["plate_confidence_pct"])
+        self.assertIn("nConfidence=300", info["confidence_debug"])
+        self.assertIn("type='Plate'", info["confidence_debug"])
 
     def test_missing_field_does_not_lose_the_event(self):
         alarm = FakeAlarmInfo()

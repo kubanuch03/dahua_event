@@ -297,7 +297,7 @@ class Callbacks:
                 try:
                     logger.info(
                         f"Queueing for SmartParking (from SDK): {smart_parking_data} "
-                        f"nConfidence={a.get('plate_confidence_raw')}"
+                        f"confidence[{a.get('confidence_debug')}]"
                     )
                     # Единственный путь доставки - durable outbox +
                     # фоновый drain-поток (start_background_drain). Раньше

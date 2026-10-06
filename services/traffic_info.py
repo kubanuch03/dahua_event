@@ -16,6 +16,7 @@ class TrafficCallBackAlarmInfo:
         self.plate_province_str = ""
         self.plate_confidence_raw = None
         self.plate_confidence_pct = None
+        self.confidence_debug = ""
 
     def get_alarm_info(self, alarm_info):
         self.time_str = (
@@ -67,6 +68,7 @@ class TrafficCallBackAlarmInfo:
         # заполняет ли поле прошивка ITC413 5.003, ещё не проверено (у
         # szCountry обёртка уже читала мимо данных, см. fix/plate-country-offset).
         self.plate_confidence_raw, self.plate_confidence_pct = self._read_confidence(alarm_info)
+        self.confidence_debug = self._confidence_debug(alarm_info)
 
         return self._get_alarm_info_dict()
 
@@ -78,14 +80,51 @@ class TrafficCallBackAlarmInfo:
         0 и значения вне шкалы - «камера не сообщила», а не «уверена на 0 %»:
         прошивка, не заполняющая поле, присылает 0, и показывать его как
         процент значило бы ложно помечать каждый проезд недостоверным.
+
+        Берём только если stuObject - действительно номер (szObjectType
+        "Plate" или непустой szText): иначе под видом уверенности номера
+        ушла бы уверенность обнаружения машины (ревью, 06.10.2026).
         """
         try:
-            raw = int(alarm_info.stuObject.nConfidence)
+            obj = alarm_info.stuObject
+            kind = TrafficCallBackAlarmInfo._raw_text(obj.szObjectType).lower()
+            text = TrafficCallBackAlarmInfo._raw_text(obj.szText)
+            if kind != "plate" and not text:
+                return None, None
+            raw = int(obj.nConfidence)
         except Exception:  # noqa: BLE001 - поле необязательное, проезд не терять
             return None, None
         if raw <= 0 or raw > 255:
             return None, None
         return raw, round(raw * 100 / 255)
+
+    @staticmethod
+    def _raw_text(value) -> str:
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).split(b"\x00")[0].decode("utf-8", "replace").strip()
+        return str(value or "").strip()
+
+    @staticmethod
+    def _confidence_debug(alarm_info) -> str:
+        """
+        Сырые значения для сверки на живом потоке - ДО отсева _read_confidence:
+        тип объекта, nConfidence как есть (0 и мусор различимы) и запасное
+        stCommInfo.nPlateRecogniseConf (шкала не документирована; лежит в
+        EVENT_COMM_INFO, где обёртка уже расходилась с прошивкой, - поэтому
+        только в лог, не в данные).
+        """
+        parts = []
+        try:
+            obj = alarm_info.stuObject
+            parts.append(f"type={TrafficCallBackAlarmInfo._raw_text(obj.szObjectType)!r}")
+            parts.append(f"nConfidence={int(obj.nConfidence)}")
+        except Exception:  # noqa: BLE001
+            parts.append("stuObject=?")
+        try:
+            parts.append(f"nPlateRecogniseConf={int(alarm_info.stCommInfo.nPlateRecogniseConf)}")
+        except Exception:  # noqa: BLE001
+            pass
+        return " ".join(parts)
 
     def _decode_string(self, byte_string, encoding="utf-8"):
         # errors="replace", а не строгий режим: эти байты приходят прямо из
@@ -114,4 +153,5 @@ class TrafficCallBackAlarmInfo:
             "plate_province_str": self.plate_province_str,
             "plate_confidence_raw": self.plate_confidence_raw,
             "plate_confidence_pct": self.plate_confidence_pct,
+            "confidence_debug": self.confidence_debug,
         }
