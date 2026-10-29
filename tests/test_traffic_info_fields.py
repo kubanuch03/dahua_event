@@ -220,3 +220,66 @@ class CountryOffsetDriftTests(unittest.TestCase):
         parser = TrafficCallBackAlarmInfo()
         self.assertEqual(parser._read_country(FakeCommInfo(country=b"")), "")
 
+
+
+class FakePlateInfo:
+    def __init__(self, front=b"", back=b""):
+        self.szFrontPlateNumber = front
+        self.szBackPlateNumber = back
+
+
+class TestViewFields(unittest.TestCase):
+    """Ракурс и направление: голова/хвост/борт, въезд/выезд, полоса, скорость."""
+
+    @staticmethod
+    def _alarm(**extra):
+        alarm = FakeAlarmInfo()
+        alarm.byVehicleDirection = extra.get("view", 0)
+        alarm.emVehiclePosture = extra.get("posture", 0)
+        alarm.emCarDrivingDirection = extra.get("driving", 0)
+        alarm.byDirection = extra.get("lane_dir", 0)
+        alarm.nLane = extra.get("lane", -1)
+        alarm.nSpeed = extra.get("speed", -1)
+        alarm.stuPlateInfo = FakePlateInfo(extra.get("front", b""), extra.get("back", b""))
+        return alarm
+
+    def test_values_are_mapped(self):
+        info = TrafficCallBackAlarmInfo().get_alarm_info(self._alarm(
+            view=2, posture=3, driving=1, lane_dir=2, lane=3, speed=17, front=b"01577AGZ", back=b"05123AB"))
+        self.assertEqual(info["view"], {
+            "vehicle_view": "tail", "vehicle_posture": "tail", "driving_dir": "in", "lane_dir": "reverse",
+            "lane_no": 3, "speed_kmh": 17, "plate_front": "01577AGZ", "plate_back": "05123AB",
+            "plate_box": "", "plate_box_abs": ""})
+
+    def test_unknown_is_empty_not_invented(self):
+        view = TrafficCallBackAlarmInfo().get_alarm_info(self._alarm())["view"]
+        self.assertEqual(view["vehicle_view"], "")
+        self.assertEqual(view["driving_dir"], "")
+        self.assertIsNone(view["lane_no"])
+        self.assertIsNone(view["speed_kmh"])
+
+    def test_missing_fields_never_break_the_callback(self):
+        # старая прошивка / структура без новых полей: событие должно дойти
+        info = TrafficCallBackAlarmInfo().get_alarm_info(FakeAlarmInfo())
+        self.assertEqual(info["plate_number_str"], "01577AGZ")
+        self.assertEqual(info["view"]["vehicle_view"], "")
+
+    def test_plate_box_is_read_and_missing_is_safe(self):
+        class R:
+            left, top, right, bottom = 100, 200, 400, 300
+        alarm = self._alarm()
+        alarm.stuObject.BoundingBox = R()
+        alarm.stuObject.stuOriginalBoundingBox = R()
+        view = TrafficCallBackAlarmInfo().get_alarm_info(alarm)["view"]
+        self.assertEqual((view["plate_box"], view["plate_box_abs"]), ("100,200,400,300", "100,200,400,300"))
+        # у старой структуры рамки нет - событие всё равно проходит, поле пустое
+        view2 = TrafficCallBackAlarmInfo().get_alarm_info(self._alarm())["view"]
+        self.assertEqual(view2["plate_box"], "")
+
+    def test_payload_skips_empty_fields(self):
+        from services.traffic_info import view_fields
+
+        self.assertEqual(view_fields({"vehicle_view": "head", "driving_dir": "", "lane_no": None,
+                                                 "speed_kmh": 0}),
+                         {"view_side": "head", "speed_kmh": 0})
+        self.assertEqual(view_fields(None), {})

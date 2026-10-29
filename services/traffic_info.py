@@ -5,6 +5,23 @@ from logger import get_logger
 logger = get_logger("TRAFFIC INFO")
 
 
+_VIEW_PAYLOAD_KEYS = {
+    "vehicle_view": "view_side", "driving_dir": "drive_dir", "lane_dir": "lane_dir",
+    "lane_no": "lane_no", "speed_kmh": "speed_kmh", "plate_front": "plate_front", "plate_back": "plate_back",
+    "plate_box": "plate_box", "plate_box_abs": "plate_box_abs",
+}
+
+
+def view_fields(view) -> dict:
+    """Поля ракурса/направления для SmartParking; None и пустую строку не отправляем."""
+    out = {}
+    for src, dst in _VIEW_PAYLOAD_KEYS.items():
+        value = (view or {}).get(src)
+        if value not in (None, ""):
+            out[dst] = value
+    return out
+
+
 class TrafficCallBackAlarmInfo:
     def __init__(self):
         self.time_str = ""
@@ -19,6 +36,8 @@ class TrafficCallBackAlarmInfo:
         self.plate_confidence_raw = None
         self.plate_confidence_pct = None
         self.confidence_debug = ""
+        # Ракурс и направление (структура события NetSDK, TrafficJunction) - см. _read_view
+        self.view = {}
 
     def get_alarm_info(self, alarm_info):
         self.time_str = (
@@ -69,8 +88,54 @@ class TrafficCallBackAlarmInfo:
         # проверено на проде 06.10.2026 (см. _read_confidence).
         self.plate_confidence_raw, self.plate_confidence_pct = self._read_confidence(alarm_info)
         self.confidence_debug = self._confidence_debug(alarm_info)
+        self.view = self._read_view(alarm_info)
 
         return self._get_alarm_info_dict()
+
+    #: byVehicleDirection (EM_VEHICLE_DIRECTION): что попало в кадр
+    _VEHICLE_VIEW = {1: "head", 2: "tail", 3: "side"}
+    #: emVehiclePosture (EM_VEHICLE_POSTURE_TYPE): поза машины
+    _VEHICLE_POSTURE = {1: "head", 2: "side", 3: "tail"}
+    #: emCarDrivingDirection (EM_CAR_DRIVING_DIRECTION): въезжает в зону / выезжает
+    _DRIVING_DIR = {1: "in", 2: "out"}
+    #: byDirection: прямое / обратное направление полосы
+    _LANE_DIR = {1: "forward", 2: "reverse"}
+
+    def _read_view(self, alarm_info) -> dict:
+        """
+        Ракурс и направление движения, как их отдала камера: голова / хвост / борт,
+        въезд / выезд, полоса, скорость, передний и задний знак отдельно.
+
+        Вызывается ВНУТРИ ctypes-колбэка: исключение здесь теряет событие целиком,
+        поэтому каждое поле читается отдельно и при любой ошибке пустое. Ноль в
+        enum - «камера не знает»: отдаём пустую строку, а не выдуманное значение.
+        Прошивка ITC413 может не заполнять часть полей - это выясняется по данным.
+        """
+        out = {}
+
+        def grab(name, getter):
+            try:
+                out[name] = getter()
+            except Exception as exc:  # noqa: BLE001 - поле справочное
+                logger.debug(f"view.{name}: {exc}")
+                out[name] = "" if name not in ("lane_no", "speed_kmh") else None
+
+        grab("vehicle_view", lambda: self._VEHICLE_VIEW.get(int(alarm_info.byVehicleDirection), ""))
+        grab("vehicle_posture", lambda: self._VEHICLE_POSTURE.get(int(alarm_info.emVehiclePosture), ""))
+        grab("driving_dir", lambda: self._DRIVING_DIR.get(int(alarm_info.emCarDrivingDirection), ""))
+        grab("lane_dir", lambda: self._LANE_DIR.get(int(alarm_info.byDirection), ""))
+        grab("lane_no", lambda: (lambda v: v if v >= 0 else None)(int(alarm_info.nLane)))
+        grab("speed_kmh", lambda: (lambda v: v if v >= 0 else None)(int(alarm_info.nSpeed)))
+        # Рамка номера, как её видит камера: относительные координаты (доли 8192 по каждой оси) и абсолютные.
+        # Нужна, чтобы выбирать рамку модели ГЕОМЕТРИЧЕСКИ (пересечение), а не по тексту номера.
+        def rect(r):
+            return ",".join(str(int(getattr(r, k))) for k in ("left", "top", "right", "bottom"))
+
+        grab("plate_box", lambda: rect(alarm_info.stuObject.BoundingBox))
+        grab("plate_box_abs", lambda: rect(alarm_info.stuObject.stuOriginalBoundingBox))
+        grab("plate_front", lambda: self._decode_string(alarm_info.stuPlateInfo.szFrontPlateNumber, encoding="gb2312").strip())
+        grab("plate_back", lambda: self._decode_string(alarm_info.stuPlateInfo.szBackPlateNumber, encoding="gb2312").strip())
+        return out
 
     @staticmethod
     def _read_confidence(alarm_info):
@@ -210,4 +275,5 @@ class TrafficCallBackAlarmInfo:
             "plate_confidence_raw": self.plate_confidence_raw,
             "plate_confidence_pct": self.plate_confidence_pct,
             "confidence_debug": self.confidence_debug,
+            "view": self.view,
         }

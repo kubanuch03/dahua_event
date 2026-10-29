@@ -2,7 +2,7 @@
 import os
 import time
 from ctypes import cast, POINTER, c_ubyte, c_longlong, c_ulong, c_void_p, c_ulonglong, c_int
-from services.traffic_info import TrafficCallBackAlarmInfo
+from services.traffic_info import TrafficCallBackAlarmInfo, view_fields
 from services.wander_info import PulseThrottle, build_payload as build_wander_payload
 # --- УДАЛЕНО --- Убираем зависимость от внешнего сервиса Autovision
 # from services.autovision import StateNumberDetector 
@@ -49,6 +49,50 @@ def start_background_drain():
 # каждую роль. По умолчанию выключено - включать явно только при живой
 # отладке на месте, не постоянно в проде.
 SAVE_DEBUG_SNAPSHOTS = os.environ.get("SAVE_DEBUG_SNAPSHOTS", "false").lower() == "true"
+
+# Диагностика серии кадров (29.10): пишет КАЖДЫЙ кадр серии (nSequence 3,2,1), а не
+# только финальный, чтобы проверить, лучше ли промежуточный кадр последнего.
+# Отправка в SmartParking не меняется. Выключено по умолчанию; кадры в
+# data/burst/img, хранятся последние BURST_KEEP штук.
+LOG_BURST = os.environ.get("LOG_BURST", "false").lower() == "true"
+try:
+    BURST_KEEP = max(1, int(os.environ.get("BURST_KEEP", "600")))
+except ValueError:
+    BURST_KEEP = 600
+
+
+def _log_burst(alarm_info, a, pBuffer, dwBufSize):
+    try:
+        import json as _json
+        base = os.path.join(os.path.abspath("data/"), "burst")
+        imgdir = os.path.join(base, "img")
+        os.makedirs(imgdir, exist_ok=True)
+        u = alarm_info.UTC
+        ts = "%04d%02d%02d_%02d%02d%02d_%03d" % (
+            u.dwYear, u.dwMonth, u.dwDay, u.dwHour, u.dwMinute, u.dwSecond, getattr(u, "dwMillisecond", 0))
+        seq = alarm_info.nSequence
+        name = f"{ts}_s{seq}_i{alarm_info.byImageIndex}.jpg"
+        if dwBufSize > 0:
+            with open(os.path.join(imgdir, name), "wb") as f:
+                f.write(bytes(cast(pBuffer, POINTER(c_ubyte * dwBufSize)).contents))
+        rec = {"utc": ts, "seq": seq, "img_idx": alarm_info.byImageIndex,
+               "plate": a.get("plate_number_str"), "conf": a.get("plate_confidence_pct"),
+               "view": a.get("view"), "lane": alarm_info.nLane, "speed": alarm_info.nSpeed,
+               "buf": dwBufSize, "n_images": alarm_info.nImageInfoNum, "file": name}
+        with open(os.path.join(base, "burst.jsonl"), "a", encoding="utf-8") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        files = sorted(os.listdir(imgdir))
+        for old in files[:-BURST_KEEP]:
+            os.remove(os.path.join(imgdir, old))
+        # burst.jsonl не растёт вечно: держим не больше 2*BURST_KEEP последних строк
+        jl = os.path.join(base, "burst.jsonl")
+        with open(jl, encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > 2 * BURST_KEEP:
+            with open(jl, "w", encoding="utf-8") as f:
+                f.writelines(lines[-BURST_KEEP:])
+    except Exception as exc:  # диагностика не должна ронять колбэк
+        logger.warning(f"log_burst: {exc!r}")
 
 callback_num = 0
 
@@ -201,6 +245,8 @@ class Callbacks:
             # 'a' теперь наш главный источник данных о распознавании
             a = show_info.get_alarm_info(alarm_info)
             logger.debug(f"Received from SDK: {a}")
+            if LOG_BURST:
+                _log_burst(alarm_info, a, pBuffer, dwBufSize)
 
             # 2. Получаем номерной знак из данных SDK
             plate_number_from_sdk = a.get("plate_number_str")
@@ -259,6 +305,10 @@ class Callbacks:
                     # не сообщила (см. traffic_info._read_confidence). В
                     # SmartParking видна только администраторам.
                     "plate_confidence": a.get("plate_confidence_pct"),
+                    # Ракурс и направление от камеры (traffic_info._read_view):
+                    # пустая строка / None - камера не заполнила. Справочно, на
+                    # проезд не влияет.
+                    **view_fields(a.get("view")),
                     "event_id": f"{camera_id}_{callback_num}",
                     # camera_routing_key = "{CAMERA_ROLE}_{CAMERA_SLOT}",
                     # построен в main.py из СВОИХ ЖЕ env-переменных этого

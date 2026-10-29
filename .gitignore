@@ -6,6 +6,8 @@ CONTEXT.md
 
 # Локальные секреты/раннтайм-состояние - не для репо ни при каких условиях.
 .env
+.env.*
+!.env.template
 docker-compose.local.yml
 
 # data/<role>_<slot>/ - примонтированный runtime-каталог контейнера:
