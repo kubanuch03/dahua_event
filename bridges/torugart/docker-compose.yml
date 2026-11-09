@@ -1,0 +1,50 @@
+# Мосты Торугарта из одного образа. Различия моста — env-файл env/<код>.env и каталог данных.
+# Образ: docker build -f bridges/torugart/Dockerfile -t autovision-bridge:${BRIDGE_TAG} . (из корня репозитория).
+# BRIDGE_NETWORK — внешняя сеть, где мосты видят читалку; BRIDGE_DATA_ROOT — каталог с <код>/data старых мостов.
+name: torugart-bridges
+x-bridge: &bridge
+  image: autovision-bridge:${BRIDGE_TAG:?тег образа}
+  restart: unless-stopped
+  networks: [bridges]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 60s
+services:
+  Cam_Tor_Lane1:
+    <<: *bridge
+    container_name: Cam_Tor_Lane1_v2
+    env_file: ./env/Cam_Tor_Lane1.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_Lane1/data:/app/data"]
+  Cam_Tor_Lane2:
+    <<: *bridge
+    container_name: Cam_Tor_Lane2_v2
+    env_file: ./env/Cam_Tor_Lane2.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_Lane2/data:/app/data"]
+  Cam_Tor_Lane3:
+    <<: *bridge
+    container_name: Cam_Tor_Lane3_v2
+    env_file: ./env/Cam_Tor_Lane3.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_Lane3/data:/app/data"]
+  Cam_Tor_Lane4:
+    <<: *bridge
+    profiles: ["lane4"]
+    container_name: Cam_Tor_Lane4_v2
+    env_file: ./env/Cam_Tor_Lane4.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_Lane4/data:/app/data"]
+  Cam_Tor_VGK1:
+    <<: *bridge
+    container_name: Cam_Tor_VGK1_v2
+    env_file: ./env/Cam_Tor_VGK1.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_VGK1/data:/app/data"]
+  Cam_Tor_VGK2:
+    <<: *bridge
+    container_name: Cam_Tor_VGK2_v2
+    env_file: ./env/Cam_Tor_VGK2.env
+    volumes: ["${BRIDGE_DATA_ROOT:?каталог данных мостов}/Cam_Tor_VGK2/data:/app/data"]
+networks:
+  bridges:
+    external: true
+    name: ${BRIDGE_NETWORK:?имя docker-сети}

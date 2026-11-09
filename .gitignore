@@ -22,3 +22,8 @@ data/
 
 # Локальное переопределение сети: на каждой машине своё.
 docker-compose.override.yml
+
+# env-файлы мостов (секреты) и данные
+bridges/torugart/env/*
+!bridges/torugart/env/*.env.example
+bridges/torugart/data/

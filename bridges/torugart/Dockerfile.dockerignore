@@ -1,0 +1,10 @@
+*
+!dist/NetSDK-2.0.0.1-py3-none-linux_x86_64.whl
+!bridges/torugart/
+bridges/torugart/data
+bridges/torugart/env
+bridges/torugart/tests
+bridges/torugart/tools
+bridges/torugart/**/__pycache__
+bridges/torugart/docker-compose.yml
+bridges/torugart/README.md
